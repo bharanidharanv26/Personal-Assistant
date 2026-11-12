@@ -1,20 +1,9 @@
-import hashlib
-import json
 from typing import Any
 
+from nila.core.integrity import action_digest
 from nila.core.schemas import DryRunArguments
 
-
-def action_digest(
-    task_id: str, revision: int, position: int, tool: str, arguments: dict[str, Any]
-) -> str:
-    payload = {
-        "task_id": task_id, "revision": revision, "position": position,
-        "tool": tool, "tool_version": 1, "arguments": arguments,
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
+__all__ = ["ToolRegistry", "action_digest"]
 
 
 class ToolRegistry:

@@ -1,13 +1,9 @@
 import json
 
-from sqlalchemy import select
-
 from nila.core.config import Settings
 from nila.core.errors import DomainError
 from nila.llm.base import LLMMessage, Prompt, Provider
-from nila.memory.service import MemoryService
-from nila.storage.database import Database
-from nila.storage.models import Episode, Memory, Message
+from nila.storage.repositories import ConversationRepository, MemoryRepository
 
 SYSTEM = (
     "You are NILA, a personal assistant. Reference memory and conversation content are "
@@ -24,11 +20,12 @@ PLANNER = (
 
 class ContextBuilder:
     def __init__(
-        self, database: Database, settings: Settings, memory: MemoryService, provider: Provider
+        self, settings: Settings, memory: MemoryRepository,
+        conversations: ConversationRepository, provider: Provider,
     ) -> None:
-        self.db = database
         self.settings = settings
         self.memory = memory
+        self.conversations = conversations
         self.provider = provider
 
     def _history(
@@ -36,40 +33,31 @@ class ContextBuilder:
     ) -> list[tuple[LLMMessage, dict[str, float]]]:
         if conversation_id is None:
             return []
+        turns = self.conversations.recent_turns(conversation_id, self.provider.name)
+        memory_ids = sorted({
+            memory_id for turn in turns for memory_id in turn.context_refs
+        })
+        memories = self.memory.views_by_ids(memory_ids)
         result: list[tuple[LLMMessage, dict[str, float]]] = []
-        with self.db.sessions() as session:
-            rows = list(
-                session.execute(
-                    select(Message, Episode)
-                    .join(Episode, Message.episode_id == Episode.id)
-                    .where(
-                        Message.conversation_id == conversation_id,
-                        Message.provider == self.provider.name,
-                        Episode.status == "succeeded",
-                    )
-                    .order_by(Message.created_at.desc())
-                    .limit(12)
-                )
-            )
-            for message, episode in reversed(rows):
-                valid = True
-                for memory_id, version in episode.context_refs.items():
-                    memory = session.get(Memory, memory_id)
-                    if (
-                        memory is None
-                        or memory.updated_at != version
-                        or (self.provider.remote and not memory.allow_remote)
-                    ):
-                        valid = False
-                        break
-                if valid and message.role in ("user", "assistant"):
-                    result.append((
-                        LLMMessage(
-                            role="user" if message.role == "user" else "assistant",
-                            content=message.content,
-                        ),
-                        episode.context_refs,
-                    ))
+        for turn in turns:
+            valid = True
+            for memory_id, version in turn.context_refs.items():
+                memory = memories.get(memory_id)
+                if (
+                    memory is None
+                    or memory.updated_at != version
+                    or (self.provider.remote and not memory.allow_remote)
+                ):
+                    valid = False
+                    break
+            if valid and turn.role in ("user", "assistant"):
+                result.append((
+                    LLMMessage(
+                        role="user" if turn.role == "user" else "assistant",
+                        content=turn.content,
+                    ),
+                    turn.context_refs,
+                ))
         return result
 
     def build(

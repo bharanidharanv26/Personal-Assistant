@@ -7,7 +7,6 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filelock import FileLock, Timeout
-from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from nila import __version__
@@ -36,7 +35,6 @@ from nila.core.schemas import (
     TaskView,
 )
 from nila.llm.base import Provider
-from nila.storage.models import AuditEvent
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -225,13 +223,6 @@ def create_app(
 
     @app.get("/audit")
     def audit_events(runtime: ServiceDep, limit: Limit = 100) -> list[dict[str, Any]]:
-        with runtime.db.sessions() as session:
-            return [
-                {"id": row.id, "created_at": row.created_at, "event": row.event,
-                 "resource_id": row.resource_id, "details": row.details}
-                for row in session.scalars(
-                    select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(limit)
-                )
-            ]
+        return runtime.audits.list(limit)
 
     return app

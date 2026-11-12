@@ -5,30 +5,23 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import URL
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
+from nila.storage.dialects import DatabasePolicy, SQLitePolicy
 from nila.storage.models import AuditEvent
 
 
 class Database:
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, *, policy: DatabasePolicy | None = None) -> None:
         data_dir.mkdir(parents=True, exist_ok=True)
-        self.engine = create_engine(
-            URL.create("sqlite", database=str(data_dir / "nila.db")),
-            connect_args={"check_same_thread": False, "timeout": 5},
-        )
-        event.listen(self.engine, "connect", self._configure_sqlite)
+        self.policy: DatabasePolicy = policy if policy is not None else SQLitePolicy()
+        self.engine = self.policy.create_engine(data_dir)
+        event.listen(self.engine, "connect", self._configure_connection)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
 
-    @staticmethod
-    def _configure_sqlite(connection: Any, _: Any) -> None:
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
+    def _configure_connection(self, connection: Any, _: Any) -> None:
+        self.policy.configure_connection(connection)
 
     def migrate(self) -> None:
         config = Config()
@@ -40,8 +33,7 @@ class Database:
     @contextmanager
     def transaction(self) -> Iterator[Session]:
         with self.sessions() as session:
-            # Serialize policy checks with state changes across concurrent requests.
-            session.execute(text("BEGIN IMMEDIATE"))
+            self.policy.begin_write(session)
             try:
                 yield session
                 session.commit()
